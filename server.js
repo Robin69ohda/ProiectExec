@@ -3,11 +3,10 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const db = require('./database');
 
 const app = express();
 const PORT = 3000;
-const db = require('./database');
-
 
 function sanitizeName(name) {
   return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
@@ -15,10 +14,10 @@ function sanitizeName(name) {
 
 // Set up file storage
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: function (req, file, cb) {
     cb(null, 'uploads/');
   },
-  filename: (req, file, cb) => {
+  filename: function (req, file, cb) {
     const uniqueName = Date.now() + '-' + file.originalname;
     cb(null, uniqueName);
   }
@@ -26,93 +25,66 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // Ensure uploads directory exists
-if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads');
+}
 
 // Serve static files
 app.use(express.static(__dirname));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.urlencoded({ extended: true }));
 
-// Route: get all submissions
-app.get('/submissions', (req, res) => {
-  const filePath = path.join(__dirname, 'submissions.json');
-  if (!fs.existsSync(filePath)) return res.json([]);
-
-  const lines = fs.readFileSync(filePath, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(line => line.trim() !== '');
-
-  const data = lines.map(line => JSON.parse(line));
-  res.json(data);
-});
-
-// Route: get total submission count
-app.get('/submission-count', (req, res) => {
-  const filePath = path.join(__dirname, 'submissions.json');
-  if (!fs.existsSync(filePath)) return res.json({ count: 0 });
-
-  const lines = fs.readFileSync(filePath, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(line => line.trim() !== '');
-
-  res.json({ count: lines.length });
-});
-
-// Route: submit form
+// Submission route
 app.post('/submit', upload.single('idPhoto'), (req, res) => {
   const { firstName, lastName, bank } = req.body;
-  const fullName = `${firstName} ${lastName}`;    
+  const fullName = `${firstName} ${lastName}`;
+  const rawName = sanitizeName(fullName);
+  const timestamp = new Date();
+
+  // Count previous submissions from this user
+  const previousCount = db.prepare('SELECT COUNT(*) as count FROM submissions WHERE fullName = ?').get(fullName).count;
+  const count = previousCount + 1;
+
+  // Save the file with a structured name
   const idFile = req.file;
-
-  const filePath = path.join(__dirname, 'submissions.json');
-  const rawName = sanitizeName(`${firstName} ${lastName}`);
-  const timestamp = new Date().toISOString();
-
-  let count = 1;
-  let allSubmissions = [];
-  if (fs.existsSync(filePath)) {
-    const lines = fs.readFileSync(filePath, 'utf-8')
-      .trim()
-      .split('\n')
-      .filter(line => line.trim() !== '');
-    allSubmissions = lines.map(line => JSON.parse(line));
-    count = allSubmissions.filter(sub => sanitizeName(sub.fullName) === rawName).length + 1;
-  }
-
   const idFileName = `${rawName}-${count}${path.extname(idFile.originalname)}`;
   const newIdPath = path.join('uploads', idFileName);
   fs.renameSync(idFile.path, newIdPath);
 
-  const logEntry = {
-    timestamp,
+  const id = `${fullName} ${count}`;
+
+  // Save to database
+  db.prepare(`
+    INSERT INTO submissions (id, timestamp, firstName, lastName, fullName, bank, idFilePath)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    timestamp.toISOString(),
     firstName,
     lastName,
     fullName,
     bank,
-    idFilePath: newIdPath,
-    id: `${firstName} ${lastName}-${count}`
-  };
-  
+    newIdPath
+  );
 
-  fs.appendFileSync(filePath, JSON.stringify(logEntry) + '\n');
-  res.redirect('/thank-you.html'); // Prevents form resubmission on refresh
+  res.redirect('/thank-you.html');
 });
 
-// Route: generate PDF by ID
+// Admin: get all submissions
+app.get('/submissions', (req, res) => {
+  const rows = db.prepare('SELECT * FROM submissions ORDER BY timestamp DESC').all();
+  res.json(rows);
+});
+
+// Admin: get total submission count
+app.get('/submission-count', (req, res) => {
+  const count = db.prepare('SELECT COUNT(*) AS count FROM submissions').get().count;
+  res.json({ count });
+});
+
+// PDF generation
 app.get('/pdf/:id', (req, res) => {
-  const id = req.params.id;
-  const filePath = path.join(__dirname, 'submissions.json');
-  if (!fs.existsSync(filePath)) return res.status(404).send('No submissions found');
-
-  const lines = fs.readFileSync(filePath, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(line => line.trim() !== '');
-
-  const submissions = lines.map(line => JSON.parse(line));
-  const entry = submissions.find(e => e.id === id);
+  const entry = db.prepare('SELECT * FROM submissions WHERE id = ?').get(req.params.id);
   if (!entry) return res.status(404).send('Submission not found');
 
   const doc = new PDFDocument();
@@ -136,7 +108,7 @@ app.get('/pdf/:id', (req, res) => {
     doc.text('⚠️ ID image not found.');
   }
 
-  doc.fontSize(16).text(`Full Name: ${entry.fullName}`);
+  doc.fontSize(16).text(`Name: ${entry.fullName}`);
   doc.text(`Bank: ${entry.bank}`);
   doc.text(`Submitted at: ${new Date(entry.timestamp).toLocaleString()}`);
   doc.end();
