@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Person Details</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 2rem;
+        }
+        h1 {
+            margin-bottom: 1rem;
+        }
+        .submission {
+            border: 1px solid #ccc;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 8px;
+        }
+        a {
+            color: blue;
+        }
+        .back-button {
+            display: inline-block;
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #333;
+        }
+        .back-button:hover {
+            background-color: #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+<a href="/admin" class="back-button">← Back to People List</a>
+<h1 id="personName"></h1>
+<div id="submissions"></div>
+
+<script>
+    const personId = window.location.pathname.split('/').pop();
+
+    fetch(`/person/${personId}`)
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById('personName').innerText = `${data.person.firstName} ${data.person.lastName}'s Submissions`;
+
+            const container = document.getElementById('submissions');
+            if (data.submissions.length === 0) {
+                container.innerHTML = '<p>No submissions yet.</p>';
+            } else {
+                data.submissions.forEach(item => {
+                    const el = document.createElement('div');
+                    el.className = 'submission';
+                    el.innerHTML = `
+                <p><strong>ID:</strong> ${item.id}</p>
+                <p><strong>Bank:</strong> ${item.bank}</p>
+                <p><strong>Submitted at:</strong> ${new Date(item.timestamp).toLocaleString()}</p>
+                <p><img src="${item.idFilePath}" alt="ID Photo" style="max-width: 300px; border: 1px solid #ccc; border-radius: 8px;" /></p>
+                <p><a href="${item.idFilePath}" target="_blank">Download ID Photo</a></p>
+                <p><a href="/pdf/${item.id}" target="_blank">Download PDF</a></p>
+            `;
+                    container.appendChild(el);
+                });
+            }
+        })
+        .catch(err => {
+            document.getElementById('submissions').innerHTML = '<p>Error loading person details.</p>';
+            console.error(err);
+        });
+</script>
+</body>
+</html>
